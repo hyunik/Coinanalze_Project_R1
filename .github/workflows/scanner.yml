@@ -1,0 +1,80 @@
+name: On-Chain Bull Signal Scanner
+
+on:
+  schedule:
+    # GitHub Actions cron은 UTC 시간 기준입니다.
+    # 한국 시간(KST)은 UTC+9 이므로:
+    # KST 09:00 -> UTC 00:00
+    # KST 21:00 -> UTC 12:00
+    - cron: '0 0 * * *'  # 한국 시간 매일 오전 9시
+    - cron: '0 12 * * *' # 한국 시간 매일 오후 9시
+
+  workflow_dispatch:
+    # 수동 실행을 위한 트리거 (버튼 클릭으로 원할 때 언제든 실행 가능)
+
+jobs:
+  scan-and-notify:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Create config.py from template (GitHub Secrets Injection)
+      # GitHub 저장소 설정(Settings -> Secrets and variables -> Actions)에 등록한 값들을 
+      # 실제 config.py 파일의 해당 변수 위치에 주입하여 새로 생성합니다. 
+      run: |
+        cat > config.py << 'EOF'
+        # 자동 생성된 config.py
+        import os
+        
+        # ─── API 키 ──────────────────────────────────────────────────────────────────
+        COINALYZE_API_KEY  = os.environ.get('COINALYZE_API_KEY')
+        TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+        TELEGRAM_CHAT_ID   = os.environ.get('TELEGRAM_CHAT_ID')
+        
+        # ─── 스캔 파라미터 ────────────────────────────────────────────────────────────
+        MARKET_CAP_RANK_MIN = 150   
+        MARKET_CAP_RANK_MAX = 400   
+        MIN_SCORE           = 60    
+        MAX_ALERTS          = 5     
+        
+        # ─── Binance OHLCV 설정 ───────────────────────────────────────────────────────
+        BINANCE_INTERVAL    = "4h"  
+        BINANCE_LIMIT       = 100   
+        
+        # ─── Coinalyze Rate Limit 설정 ────────────────────────────────────────────────
+        RATE_LIMIT_MAX_CALLS = 38
+        RATE_LIMIT_PERIOD    = 60   
+        CHUNK_SIZE           = 20   
+        CHUNK_SLEEP          = 0.3  
+        
+        # ─── Coinalyze 데이터 인터벌 ─────────────────────────────────────────────────
+        COINALYZE_INTERVAL  = "1day"  
+        
+        # ─── 스케줄 ────────────────────────────────────────────────────────
+        SCHEDULE_HOURS_KST  = [9, 21]  # Github Actions 사용 시 main.py 내 스케줄러는 사용되지 않음
+        
+        # ─── 로그 설정 ────────────────────────────────────────────────────────────────
+        LOG_FILE            = "logs/scanner.log"
+        LOG_LEVEL           = "INFO"
+        EOF
+      env:
+        COINALYZE_API_KEY: ${{ secrets.COINALYZE_API_KEY }}
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+    - name: Run On-Chain Scanner
+      # 즉시 1회 실행하는 --run-now 플래그 사용
+      run: python main.py --run-now
