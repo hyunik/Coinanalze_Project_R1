@@ -1,7 +1,8 @@
 """
-modules/binance.py
-──────────────────
-Binance 선물 REST API에서 OHLCV를 수집하고 기술적 레벨을 계산합니다.
+modules/bybit.py
+────────────────
+Bybit V5 REST API에서 OHLCV를 수집하고 기술적 레벨을 계산합니다.
+(Binance 대체용 - GitHub Actions US IP 차단 회피 목적으로 작성)
 
 인증 불필요 / Rate Limit 없음 (공개 엔드포인트)
 """
@@ -16,18 +17,30 @@ import config
 
 logger = logging.getLogger(__name__)
 
-BINANCE_KLINES_URL    = "https://fapi.binance.com/fapi/v1/klines"
-BINANCE_EXCHANGE_URL  = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+BYBIT_KLINES_URL    = "https://api.bybit.com/v5/market/kline"
+BYBIT_EXCHANGE_URL  = "https://api.bybit.com/v5/market/instruments-info?category=linear"
 
 # 캐시 — 프로세스 내 1회만 조회
 _listed_futures_cache: set[str] | None = None
+
+
+# ─── Binance 타임프레임 -> Bybit 타임프레임 변환 ─────────────────────────────
+
+def _convert_interval(interval: str) -> str:
+    """ '4h' -> '240', '1d' -> 'D' """
+    mapping = {
+        "1m": "1", "3m": "3", "5m": "5", "15m": "15", "30m": "30",
+        "1h": "60", "2h": "120", "4h": "240", "6h": "360", "12h": "720",
+        "1d": "D", "1w": "W", "1M": "M"
+    }
+    return mapping.get(interval, "240")
 
 
 # ─── 상장 여부 확인 ───────────────────────────────────────────────────────────
 
 def get_listed_futures() -> set[str]:
     """
-    Binance 선물 거래 중인 심볼 전체를 반환합니다. (캐시 적용)
+    Bybit 선물(Linear) 거래 중인 심볼 전체를 반환합니다. (캐시 적용)
 
     Returns
     -------
@@ -39,19 +52,19 @@ def get_listed_futures() -> set[str]:
         return _listed_futures_cache
 
     try:
-        resp = requests.get(BINANCE_EXCHANGE_URL, timeout=10)
+        resp = requests.get(BYBIT_EXCHANGE_URL, timeout=10)
         resp.raise_for_status()
         data = resp.json()
         _listed_futures_cache = {
             s["symbol"]
-            for s in data.get("symbols", [])
-            if s.get("status") == "TRADING"
+            for s in data.get("result", {}).get("list", [])
+            if s.get("status") == "Trading" and s.get("symbol", "").endswith("USDT")
         }
         logger.info(
-            f"[Binance] 선물 상장 심볼 {len(_listed_futures_cache)}개 로드 완료"
+            f"[Bybit] 선물 상장 심볼 {len(_listed_futures_cache)}개 로드 완료"
         )
     except requests.RequestException as e:
-        logger.error(f"[Binance] exchangeInfo 조회 실패: {e}")
+        logger.error(f"[Bybit] exchangeInfo 조회 실패: {e}")
         _listed_futures_cache = set()
 
     return _listed_futures_cache
@@ -59,7 +72,7 @@ def get_listed_futures() -> set[str]:
 
 def is_listed(ticker: str) -> bool:
     """
-    해당 ticker가 Binance 선물에 상장되어 있는지 확인합니다.
+    해당 ticker가 Bybit 선물에 상장되어 있는지 확인합니다.
 
     Parameters
     ----------
@@ -82,7 +95,7 @@ def get_ohlcv(
     limit: int | None = None,
 ) -> pd.DataFrame | None:
     """
-    Binance 선물 OHLCV 캔들 데이터를 DataFrame으로 반환합니다.
+    Bybit 선물 OHLCV 캔들 데이터를 DataFrame으로 반환합니다.
 
     Parameters
     ----------
@@ -96,45 +109,49 @@ def get_ohlcv(
     Returns
     -------
     pd.DataFrame | None
-        컬럼: open_time, open, high, low, close, volume,
-               close_time, taker_buy_base, taker_buy_quote
+        컬럼: open_time, open, high, low, close, volume, turnover
         실패 시 None 반환
     """
+    # config의 Binance 변수명을 그대로 공유해서 사용 (기존 구조 호환성 유지)
     interval = interval or config.BINANCE_INTERVAL
     limit    = limit    or config.BINANCE_LIMIT
     symbol   = f"{ticker.upper()}USDT"
 
     params = {
+        "category": "linear",
         "symbol":   symbol,
-        "interval": interval,
+        "interval": _convert_interval(interval),
         "limit":    limit,
     }
 
     try:
-        resp = requests.get(BINANCE_KLINES_URL, params=params, timeout=15)
+        resp = requests.get(BYBIT_KLINES_URL, params=params, timeout=15)
         resp.raise_for_status()
-        raw = resp.json()
+        res_data = resp.json()
+        
+        if res_data.get("retCode") != 0:
+            logger.warning(f"[Bybit] {symbol} 데이터 요청 오류: {res_data.get('retMsg')}")
+            return None
+            
+        raw = res_data.get("result", {}).get("list", [])
     except requests.RequestException as e:
-        logger.error(f"[Binance] {symbol} OHLCV 수집 실패: {e}")
+        logger.error(f"[Bybit] {symbol} OHLCV 수집 실패: {e}")
         return None
 
     if not raw:
-        logger.warning(f"[Binance] {symbol} OHLCV 데이터 없음")
+        logger.warning(f"[Bybit] {symbol} OHLCV 데이터 없음")
         return None
 
-    columns = [
-        "open_time", "open", "high", "low", "close", "volume",
-        "close_time", "quote_asset_volume", "num_trades",
-        "taker_buy_base", "taker_buy_quote", "ignore",
-    ]
+    # Bybit 결과는 최신 순이므로 역순(기존부터 최신으로) 정렬
+    raw = raw[::-1]
+
+    columns = ["open_time", "open", "high", "low", "close", "volume", "turnover"]
     df = pd.DataFrame(raw, columns=columns)
 
     # 숫자형 변환
-    numeric_cols = ["open", "high", "low", "close", "volume",
-                    "taker_buy_base", "taker_buy_quote"]
+    numeric_cols = ["open", "high", "low", "close", "volume", "turnover"]
     df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric)
-    df["open_time"]  = pd.to_datetime(df["open_time"], unit="ms")
-    df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
+    df["open_time"]  = pd.to_datetime(df["open_time"].astype(float), unit="ms")
 
     return df
 
@@ -144,36 +161,23 @@ def get_ohlcv(
 def calc_levels(df: pd.DataFrame) -> dict:
     """
     OHLCV DataFrame에서 기술적 레벨을 계산합니다.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        get_ohlcv() 반환값
-
-    Returns
-    -------
-    dict
-        {
-            "current_price": float,   # 현재가 (마지막 종가)
-            "high_20":       float,   # 최근 20봉 고점
-            "low_20":        float,   # 최근 20봉 저점
-            "fib_382":       float,   # 피보나치 0.382 되돌림
-            "fib_618":       float,   # 피보나치 0.618 되돌림
-            "cvd_slope":     float,   # 최근 5봉 CVD 기울기 (양수=매수우위)
-            "vol_ratio":     float,   # 최근봉 거래량 / 20봉 평균
-            "position_pct":  float,   # 현재가 위치 (0~1, 0=저점, 1=고점)
-        }
     """
     recent = df.tail(20).copy()
     high   = recent["high"].max()
     low    = recent["low"].min()
     span   = high - low
 
-    # CVD (Cumulative Volume Delta) 계산
-    # delta = 매수 체결량 - 매도 체결량
+    # Bybit kline에는 taker buy volume이 없으므로
+    # 캔들의 형태(시가 대비 종가 위치)를 이용해 델타 추정 (매수우위=양수)
+    # delta = 거래량 * ((close - open) / (high - low))
     df = df.copy()
-    df["delta"] = df["taker_buy_base"] - (df["volume"] - df["taker_buy_base"])
-    df["cvd"]   = df["delta"].cumsum()
+    df["span"]  = df["high"] - df["low"]
+    df["delta"] = np.where(
+        df["span"] > 0,
+        df["volume"] * ((df["close"] - df["open"]) / df["span"]),
+        0
+    )
+    df["cvd"] = df["delta"].cumsum()
 
     current_price = float(df["close"].iloc[-1])
     cvd_slope     = float(df["cvd"].diff().tail(5).mean())
@@ -200,14 +204,9 @@ def calc_levels(df: pd.DataFrame) -> dict:
 def get_levels(ticker: str) -> dict | None:
     """
     ticker에 대한 OHLCV 수집 + 기술적 레벨 계산을 한 번에 수행합니다.
-
-    Returns
-    -------
-    dict | None
-        calc_levels() 반환값, 실패 시 None
     """
     df = get_ohlcv(ticker)
     if df is None or len(df) < 20:
-        logger.warning(f"[Binance] {ticker} 데이터 부족 (< 20봉)")
+        logger.warning(f"[Bybit] {ticker} 데이터 부족 (< 20봉)")
         return None
     return calc_levels(df)

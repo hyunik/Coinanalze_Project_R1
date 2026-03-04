@@ -30,7 +30,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 import config
-from modules import coingecko, coinalyze, binance, scorer, planner, notifier
+from modules import coingecko, coinalyze, bybit, scorer, planner, notifier
 
 # ─── 로깅 설정 ────────────────────────────────────────────────────────────────
 
@@ -96,19 +96,19 @@ def run_scan() -> None:
     coins = coingecko.filter_by_volume(coins, percentile=0.5)
     logger.info(f"[STEP 1] 거래량 필터 후 {len(coins)}개 코인")
 
-    # ── STEP 2: Binance 선물 미상장 종목 필터링 ──────────────────────────────
-    logger.info("[STEP 2] Binance 선물 상장 여부 필터링...")
+    # ── STEP 2: Bybit 선물 미상장 종목 필터링 (Binance 회피용) ───────────────────
+    logger.info("[STEP 2] Bybit 선물 상장 여부 필터링...")
     try:
         listed_tickers = [
             c for c in coins
-            if binance.is_listed(c["symbol"].upper())
+            if bybit.is_listed(c["symbol"].upper())
         ]
     except Exception as e:
-        logger.error(f"[STEP 2] Binance 필터링 실패: {e}")
+        logger.error(f"[STEP 2] Bybit 필터링 실패: {e}")
         listed_tickers = coins  # 실패 시 전체 진행
 
     logger.info(
-        f"[STEP 2] Binance 선물 상장 코인: {len(listed_tickers)}개"
+        f"[STEP 2] Bybit 선물 상장 코인: {len(listed_tickers)}개"
     )
 
     if not listed_tickers:
@@ -130,11 +130,11 @@ def run_scan() -> None:
         notifier.send_message(f"⚠️ 스캐너 오류 (STEP 3): {e}", parse_mode="")
         return
 
-    # ── STEP 4: 기술적 레벨 계산 (Binance OHLCV) ────────────────────────────
-    logger.info("[STEP 4] Binance OHLCV + 기술적 레벨 계산...")
+    # ── STEP 4: 기술적 레벨 계산 (Bybit OHLCV) ────────────────────────────
+    logger.info("[STEP 4] Bybit OHLCV + 기술적 레벨 계산...")
     levels_map: dict[str, dict] = {}
     for ticker in tickers:
-        lvl = binance.get_levels(ticker)
+        lvl = bybit.get_levels(ticker)
         if lvl:
             levels_map[ticker] = lvl
 
