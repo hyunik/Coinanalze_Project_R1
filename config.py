@@ -5,9 +5,9 @@
 # =============================================================================
 
 # ─── API 키 ──────────────────────────────────────────────────────────────────
-COINALYZE_API_KEY  = "your_coinalyze_api_key_here"
-TELEGRAM_BOT_TOKEN = "your_telegram_bot_token_here"
-TELEGRAM_CHAT_ID   = "your_telegram_chat_id_here"
+COINALYZE_API_KEY  = "bd7ee737-88cd-4f40-a6fc-48d1af95f244"
+TELEGRAM_BOT_TOKEN = "8101385555:AAEh9at2lmpPtH0BeSnw_9muzu9Wbnw5QPI"
+TELEGRAM_CHAT_ID   = "-1003681828773"
 
 # ─── 스캔 파라미터 ────────────────────────────────────────────────────────────
 MARKET_CAP_RANK_MIN = 150   # 시총 순위 하한 (여유 범위 150~400 권장)

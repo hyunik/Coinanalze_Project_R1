@@ -137,7 +137,11 @@ def _call_api(url: str, headers: dict, params: dict) -> list:
     resp = requests.get(url, headers=headers, params=params, timeout=15)
 
     if resp.status_code == 429:
-        retry_after = int(resp.headers.get("Retry-After", 60))
+        retry_after_str = resp.headers.get("Retry-After", "60")
+        try:
+            retry_after = int(float(retry_after_str)) + 1
+        except ValueError:
+            retry_after = 60
         logger.warning(f"[429] Rate limit 도달. {retry_after}초 대기 후 재시도...")
         time.sleep(retry_after)
         raise RateLimitError(retry_after)
